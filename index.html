@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Call Room</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome for Icons -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            background-color: #f5f5f5;
+            font-family: 'Arial', sans-serif;
+        }
+        .container {
+            text-align: center;
+        }
+        #videoGrid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+            margin-top: 20px;
+        }
+        video {
+            width: 100%;
+            height: 200px;
+            border-radius: 10px;
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+        }
+        .btn {
+            margin: 10px;
+        }
+        .room-actions {
+            margin-top: 20px;
+        }
+        #roomInput {
+            max-width: 300px;
+            margin: 10px auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="mb-4">Room-Based Video Call</h1>
+        <!-- Room Creation and Joining -->
+        <div class="room-actions">
+            <input type="text" id="roomInput" class="form-control" placeholder="Enter Room ID">
+            <button id="createRoomBtn" class="btn btn-success">
+                <i class="fas fa-plus-circle"></i> Create Room
+            </button>
+            <button id="joinRoomBtn" class="btn btn-primary">
+                <i class="fas fa-door-open"></i> Join Room
+            </button>
+        </div>
+
+        <div id="videoGrid" class="mt-4">
+            <video id="localVideo" autoplay muted></video>
+            <video id="remoteVideo1" autoplay></video>
+            <video id="remoteVideo2" autoplay></video>
+        </div>
+    </div>
+
+    <!-- Socket.io and Scripts -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const socket = io();
+        let localStream;
+        const peerConnections = {};
+        const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+        let roomId = '';
+
+        // Get HTML elements
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo1 = document.getElementById('remoteVideo1');
+        const remoteVideo2 = document.getElementById('remoteVideo2');
+        const createRoomBtn = document.getElementById('createRoomBtn');
+        const joinRoomBtn = document.getElementById('joinRoomBtn');
+        const roomInput = document.getElementById('roomInput');
+
+        // Get local video/audio stream
+        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+            .then(stream => {
+                localVideo.srcObject = stream;
+                localStream = stream;
+            })
+            .catch(err => console.error('Failed to get local stream', err));
+
+        // Create a new room
+        createRoomBtn.onclick = () => {
+            roomId = Math.random().toString(36).substring(2, 10); // Random room ID
+            roomInput.value = roomId;
+            socket.emit('join-room', roomId);
+            console.log(`Room created: ${roomId}`);
+        };
+
+        // Join an existing room
+        joinRoomBtn.onclick = () => {
+            roomId = roomInput.value;
+            if (roomId) {
+                socket.emit('join-room', roomId);
+                console.log(`Joined room: ${roomId}`);
+            } else {
+                alert('Please enter a valid Room ID');
+            }
+        };
+
+        // Handle new user connection in the room
+        socket.on('user-connected', (userId) => {
+            console.log('User connected:', userId);
+            createPeerConnection(userId);
+        });
+
+        // Handle offer from another user
+        socket.on('offer', ({ offer, sender }) => {
+            if (!peerConnections[sender]) createPeerConnection(sender);
+
+            const pc = peerConnections[sender];
+            pc.setRemoteDescription(new RTCSessionDescription(offer));
+            pc.createAnswer().then(answer => {
+                pc.setLocalDescription(answer);
+                socket.emit('answer', { answer, to: sender });
+            });
+        });
+
+        // Handle answer to our offer
+        socket.on('answer', ({ answer, sender }) => {
+            const pc = peerConnections[sender];
+            pc.setRemoteDescription(new RTCSessionDescription(answer));
+        });
+
+        // Handle ICE candidates
+        socket.on('ice-candidate', ({ candidate, sender }) => {
+            const pc = peerConnections[sender];
+            pc.addIceCandidate(new RTCIceCandidate(candidate));
+        });
+
+        // Handle user disconnection
+        socket.on('user-disconnected', (userId) => {
+            if (peerConnections[userId]) {
+                peerConnections[userId].close();
+                delete peerConnections[userId];
+            }
+        });
+
+        // Create peer connection
+        function createPeerConnection(peerId) {
+            const pc = new RTCPeerConnection(config);
+            peerConnections[peerId] = pc;
+
+            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+            pc.onicecandidate = event => {
+                if (event.candidate) {
+                    socket.emit('ice-candidate', { candidate: event.candidate, to: peerId });
+                }
+            };
+
+            pc.ontrack = event => {
+                if (!remoteVideo1.srcObject) {
+                    remoteVideo1.srcObject = event.streams[0];
+                } else {
+                    remoteVideo2.srcObject = event.streams[0];
+                }
+            };
+
+            // Create offer to send to other user
+            pc.createOffer().then(offer => {
+                pc.setLocalDescription(offer);
+                socket.emit('offer', { offer, to: peerId });
+            });
+        }
+    </script>
+</body>
+</html>
